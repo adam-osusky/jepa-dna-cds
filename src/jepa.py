@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 import pandas as pd
 import torch
@@ -6,6 +8,12 @@ import torch.optim as optim
 from numpy.typing import NDArray
 from pandas import DataFrame
 from torch.utils.data import DataLoader, Dataset
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 MASK_TOKEN_ID = 4
 VOCAB_SIZE = 5
@@ -51,7 +59,7 @@ def get_numpy_seqs(df: DataFrame) -> tuple[NDArray[np.int64], NDArray[np.int64]]
     return all_windows_np, labels
 
 
-def get_torch_seqs(df: DataFrame) -> tuple[torch.Tensor, torch.Tensor]:
+def get_torch_seqs(df: DataFrame) -> tuple[torch.LongTensor, torch.LongTensor]:
     """
     Given a DataFrame with columns "sequence" and "label", returns:
       - all_windows_torch: LongTensor of shape (N_windows, window_size), values in {0..3}
@@ -62,7 +70,7 @@ def get_torch_seqs(df: DataFrame) -> tuple[torch.Tensor, torch.Tensor]:
     all_windows_torch = torch.from_numpy(all_windows_np).long()  # shape (N,window_size)
     all_labels_torch = torch.from_numpy(labels_np).long()  # shape (N,)
 
-    return all_windows_torch, all_labels_torch
+    return all_windows_torch, all_labels_torch  # type: ignore
 
 
 def mask_torch_sequence(
@@ -178,3 +186,56 @@ class DNAEncoder(nn.Module):
         x = self.encoder(x)  # (window_size, B, hidden_dim)
         x = x.permute(1, 0, 2)  # (B, window_size, hidden_dim)
         return x
+
+
+def count_trainable(model: nn.Module) -> int:
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def train_jepa(
+    classification_ds: str,
+    mask_prob: float,
+    batch_size: int,
+    num_workers: int,
+    hidden_dim: int,
+    dim_feedforward: int,
+    nhead: int,
+    num_layers: int,
+    lr: float,
+) -> None:
+    device = (
+        torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+    )
+
+    df = pd.read_csv(classification_ds)
+    torch_seqs, torch_labels = get_torch_seqs(df)
+
+    dataset = TorchDNAMaskedDataset(
+        sequences_t=torch_seqs,
+        mask_prob=mask_prob,
+        mask_token_id=MASK_TOKEN_ID,
+        ignore_index=IGNORE_INDEX,
+    )
+    loader = DataLoader(
+        dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
+    )
+
+    encoder = DNAEncoder(
+        hidden_dim=hidden_dim,
+        vocab_size=VOCAB_SIZE,
+        dim_feedforward=dim_feedforward,
+        nhead=nhead,
+        num_layers=num_layers,
+    ).to(device)
+    mlm_head = MLMHead(hidden_dim=hidden_dim, vocab_size=VOCAB_SIZE).to(device)
+
+    enc_params = count_trainable(encoder)
+    head_params = count_trainable(mlm_head)
+    total_params = enc_params + head_params
+    logger.info(f"Encoder trainable parameters: {enc_params:,}")
+    logger.info(f"MLM head trainable parameters: {head_params:,}")
+    logger.info(f"Total trainable parameters: {total_params:,}")
+
+    optimizer = optim.Adam(
+        list(encoder.parameters()) + list(mlm_head.parameters()), lr=lr
+    )
