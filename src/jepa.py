@@ -8,6 +8,7 @@ from pandas import DataFrame
 from torch.utils.data import DataLoader, Dataset
 
 MASK_TOKEN_ID = 4
+VOCAB_SIZE = 5
 IGNORE_INDEX = -100
 
 char2int = (
@@ -117,7 +118,7 @@ class TorchDNAMaskedDataset(Dataset):
         self.mask_token_id = mask_token_id
         self.ignore_index = ignore_index
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.sequences.size(0)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
@@ -135,3 +136,45 @@ class TorchDNAMaskedDataset(Dataset):
             "input_ids": input_ids_t,  # LongTensor (window_size,)
             "labels": labels_t,  # LongTensor (window_size,)
         }
+
+
+class MLMHead(nn.Module):
+    def __init__(self, hidden_dim: int, vocab_size: int = VOCAB_SIZE) -> None:
+        super().__init__()
+        # Suppose `encoder_out` has shape (B, window_size, hidden_dim).
+        self.linear = nn.Linear(hidden_dim, vocab_size)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # hidden_states: (B, window_size, hidden_dim)
+        # logits: (B, window_size, vocab_size)
+        return self.linear(hidden_states)
+
+
+class DNAEncoder(nn.Module):
+    def __init__(
+        self,
+        hidden_dim: int = 128,
+        dim_feedforward: int = 512,
+        nhead: int = 8,
+        num_layers: int = 4,
+        vocab_size: int = VOCAB_SIZE,
+    ) -> None:
+        super().__init__()
+        self.tok_emb = nn.Embedding(num_embeddings=vocab_size, embedding_dim=hidden_dim)
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim, nhead=nhead, dim_feedforward=dim_feedforward
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer=enc_layer, num_layers=num_layers
+        )
+
+    def forward(self, input_ids: torch.LongTensor) -> torch.Tensor:
+        """
+        input_ids: (B, window_size), values in {0,1,2,3,4}.
+        Returns:  (B, window_size, hidden_dim)
+        """
+        x = self.tok_emb(input_ids)  # (B, window_size, hidden_dim)
+        x = x.permute(1, 0, 2)  # (window_size, B, hidden_dim)
+        x = self.encoder(x)  # (window_size, B, hidden_dim)
+        x = x.permute(1, 0, 2)  # (B, window_size, hidden_dim)
+        return x
