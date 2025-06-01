@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import os
 import random
@@ -126,7 +127,7 @@ def parse_args() -> argparse.Namespace:
 def get_classification_df(args: argparse.Namespace) -> pd.DataFrame:
     # If the output file already exists, just load it
     if os.path.exists(args.classification_ds):
-        logger.info(
+        logger.warn(
             "Found existing dataset at '%s'; loading it.", args.classification_ds
         )
         df: pd.DataFrame = pd.read_csv(args.classification_ds)
@@ -169,6 +170,14 @@ def main() -> None:
     out_dir_ts = Path("data/experiments") / timestamp
     out_dir_ts.mkdir(parents=True, exist_ok=True)
     logger.info(f"Created directory for outputs: {out_dir_ts}")
+
+    args_json = out_dir_ts / "args.json"
+    with args_json.open("w") as f:
+        json.dump(
+            {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+            f,
+            indent=2,
+        )
 
     df = get_classification_df(args)
     log_label_dist(df)
