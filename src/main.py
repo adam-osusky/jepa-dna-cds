@@ -1,12 +1,17 @@
 import argparse
 import logging
 import os
+import random
+from datetime import datetime
+from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import torch
 
+from src.jepa import train_jepa
 from src.window import create_classification_dataset
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -51,6 +56,69 @@ def parse_args() -> argparse.Namespace:
             "Value between 0 and 1 (default: %(default)s)."
         ),
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=69,
+        help="Random seed.",
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=32,
+        help="Batch size for training.",
+    )
+    parser.add_argument(
+        "--num_epochs",
+        type=int,
+        default=10,
+        help="Number of train passes through the data.",
+    )
+    parser.add_argument(
+        "--lr", type=float, default=0.01, help="Learning rate for training."
+    )
+    parser.add_argument(
+        "--ema_tau",
+        type=float,
+        default=0.95,
+        help="In-place EMA update of target's parameters",
+    )
+    parser.add_argument(
+        "--mask_prob",
+        type=float,
+        default=0.15,
+        help="Fraction of bp positions to mask during JEPA x transformation.",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=8,
+        help="Num of parallel workers",
+    )
+    parser.add_argument(
+        "--hidden_dim",
+        type=int,
+        default=128,
+        help="Hidden dimension in transformer layers in encoder.",
+    )
+    parser.add_argument(
+        "--dim_feedforward",
+        type=int,
+        default=512,
+        help="Feedforward dimension size in transformer layers in encoder.",
+    )
+    parser.add_argument(
+        "--nhead",
+        type=int,
+        default=8,
+        help="Number of attention heads in transformer layers in encoder.",
+    )
+    parser.add_argument(
+        "--num_layers",
+        type=int,
+        default=4,
+        help="Number of transformer layers in encoder.",
+    )
 
     return parser.parse_args()
 
@@ -87,11 +155,39 @@ def log_label_dist(df: pd.DataFrame) -> None:
     logger.info("Label distribution:\n%s", dist_df)
 
 
+def set_rand_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
 def main() -> None:
     args: argparse.Namespace = parse_args()
+    set_rand_seed(args.seed)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir_ts = Path("data/experiments") / timestamp
+    out_dir_ts.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Created directory for outputs: {out_dir_ts}")
 
     df = get_classification_df(args)
     log_label_dist(df)
+    logger.info(f"Classification dataframe shape = {df.shape}")
+
+    train_jepa(
+        classification_df=df,
+        mask_prob=args.mask_prob,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        hidden_dim=args.hidden_dim,
+        dim_feedforward=args.dim_feedforward,
+        nhead=args.nhead,
+        num_layers=args.num_layers,
+        lr=args.lr,
+        ema_tau=args.ema_tau,
+        num_epochs=args.num_epochs,
+        out_dir=out_dir_ts,
+    )
 
 
 if __name__ == "__main__":
