@@ -9,4 +9,5 @@ dependencies = [
     "matplotlib>=3.10.3",
     "pandas>=2.2.3",
     "torch>=2.7.0",
+    "wandb>=0.19.11",
 ]
