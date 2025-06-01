@@ -1,0 +1,11 @@
+[project]
+name = "jepa-dna-cds"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "biopython>=1.85",
+    "matplotlib>=3.10.3",
+    "pandas>=2.2.3",
+]
