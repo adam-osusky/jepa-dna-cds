@@ -62,3 +62,76 @@ def get_torch_seqs(df: DataFrame) -> tuple[torch.Tensor, torch.Tensor]:
     all_labels_torch = torch.from_numpy(labels_np).long()  # shape (N,)
 
     return all_windows_torch, all_labels_torch
+
+
+def mask_torch_sequence(
+    seq_t: torch.Tensor,
+    mask_prob: float = 0.15,
+    mask_token_id: int = MASK_TOKEN_ID,
+    ignore_index: int = IGNORE_INDEX,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Given:
+      seq_t:         torch.LongTensor of shape (window_size,), values in {0,1,2,3}
+      mask_prob:     fraction of positions to mask (default 0.15)
+      mask_token_id: integer ID for <mask> (default 4)
+      ignore_index:  label for “no loss” positions (default -100)
+
+    Returns:
+      input_ids_masked: LongTensor (window_size,), with ~mask_prob masked → mask_token_id.
+      labels:           LongTensor (window_size,), = original ID where masked, else ignore_index.
+    """
+    # 1) Sample per‐position Bernoulli to decide masking
+    #    torch.rand_like(seq_t, dtype=torch.float) → uniform [0,1) per position
+    rand_tensor = torch.rand(seq_t.shape, device=seq_t.device)  # shape (window_size,)
+    mask_bool = rand_tensor < mask_prob  # bool mask
+
+    # 2) Build labels with ignore_index everywhere except masked positions
+    labels_t = torch.full_like(seq_t, fill_value=ignore_index)  # (window_size,)
+    labels_t[mask_bool] = seq_t[mask_bool]
+
+    # 3) Replace masked positions in input_ids with mask_token_id
+    input_ids_t = seq_t.clone()
+    input_ids_t[mask_bool] = mask_token_id
+
+    return input_ids_t, labels_t
+
+
+class TorchDNAMaskedDataset(Dataset):
+    def __init__(
+        self,
+        sequences_t: torch.LongTensor,
+        mask_prob: float = 0.15,
+        mask_token_id: int = MASK_TOKEN_ID,
+        ignore_index: int = IGNORE_INDEX,
+    ) -> None:
+        """
+        sequences_t: LongTensor of shape (N_windows, window_size), values in {0,1,2,3}.
+        mask_prob: fraction of positions to mask per window.
+        """
+        assert sequences_t.dtype == torch.long, "sequences_t must be LongTensor"
+        assert sequences_t.dim() == 2  # and sequences_t.size(1) == window_size
+
+        self.sequences = sequences_t
+        self.mask_prob = mask_prob
+        self.mask_token_id = mask_token_id
+        self.ignore_index = ignore_index
+
+    def __len__(self):
+        return self.sequences.size(0)
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        seq_t = self.sequences[idx]  # shape (window_size,), dtype=torch.long
+
+        # Apply masking:
+        input_ids_t, labels_t = mask_torch_sequence(
+            seq_t,
+            mask_prob=self.mask_prob,
+            mask_token_id=self.mask_token_id,
+            ignore_index=self.ignore_index,
+        )
+
+        return {
+            "input_ids": input_ids_t,  # LongTensor (window_size,)
+            "labels": labels_t,  # LongTensor (window_size,)
+        }
