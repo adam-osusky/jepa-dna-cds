@@ -13,6 +13,7 @@ import wandb
 
 from src.jepa import train_jepa
 from src.window import create_classification_dataset
+from src.classify import train_classifier
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,17 +68,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=32,
+        default=2,
         help="Batch size for training.",
     )
     parser.add_argument(
         "--num_epochs",
         type=int,
-        default=10,
+        default=100,
         help="Number of train passes through the data.",
     )
     parser.add_argument(
-        "--lr", type=float, default=0.01, help="Learning rate for training."
+        "--lr", type=float, default=0.1, help="Learning rate for training."
     )
     parser.add_argument(
         "--ema_tau",
@@ -100,32 +101,73 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--hidden_dim",
         type=int,
-        default=128,
+        default=16,
         help="Hidden dimension in transformer layers in encoder.",
     )
     parser.add_argument(
         "--dim_feedforward",
         type=int,
-        default=512,
+        default=16*4,
         help="Feedforward dimension size in transformer layers in encoder.",
     )
     parser.add_argument(
         "--nhead",
         type=int,
-        default=8,
+        default=2,
         help="Number of attention heads in transformer layers in encoder.",
     )
     parser.add_argument(
         "--num_layers",
         type=int,
-        default=4,
+        default=1,
         help="Number of transformer layers in encoder.",
     )
     parser.add_argument(
         "--wandb_logging",
         action="store_true",
+        # default=False,
         default=True,
         help="Enable Weights & Biases logging of metrics.",
+    )
+
+    parser.add_argument(
+        "--run_classification",
+        action="store_true",
+        # default=False,
+        default=True,
+        help="After JEPA pretrain, train a classifier (frozen-encoder or raw-sequence).",
+    )
+    parser.add_argument(
+        "--pretrained_enc",
+        # default=None,
+        default="data/experiments/stellar-morning-11/dna_encoder_jepa.pth",
+        help="Path to the pretrained encoder (default: %(default)s)."
+        "If not specified will use classification head on new learnable embeddings",
+    )
+    parser.add_argument(
+        "--clf_lr",
+        type=float,
+        default=0.001,
+        help="Learning rate for classification head.",
+    )
+    parser.add_argument(
+        "--clf_epochs",
+        type=int,
+        default=1000,
+        help="Number of epochs to train the classification head.",
+    )
+    parser.add_argument(
+        "--clf_batch_size",
+        type=int,
+        default=1,
+        help="Batch size for classification training.",
+    )
+    parser.add_argument(
+        "--val_steps",
+        type=int,
+        # default=4,
+        default=10,
+        help="Run validation every N training steps (default: %(default)s).",
     )
 
     return parser.parse_args()
@@ -201,21 +243,51 @@ def main() -> None:
     log_label_dist(df)
     logger.info(f"Classification dataframe shape = {df.shape}")
 
-    train_jepa(
-        classification_df=df,
-        mask_prob=args.mask_prob,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        hidden_dim=args.hidden_dim,
-        dim_feedforward=args.dim_feedforward,
-        nhead=args.nhead,
-        num_layers=args.num_layers,
-        lr=args.lr,
-        ema_tau=args.ema_tau,
-        num_epochs=args.num_epochs,
-        out_dir=out_dir_ts,
-        wb_logger=wb_logger,
-    )
+    if not args.run_classification:
+        logger.info("Starting JEPA pretraining")
+        train_jepa(
+            classification_df=df,
+            mask_prob=args.mask_prob,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            hidden_dim=args.hidden_dim,
+            dim_feedforward=args.dim_feedforward,
+            nhead=args.nhead,
+            num_layers=args.num_layers,
+            lr=args.lr,
+            ema_tau=args.ema_tau,
+            num_epochs=args.num_epochs,
+            out_dir=out_dir_ts,
+            wb_logger=wb_logger,
+        )
+
+    if args.run_classification:
+        logger.info("Starting classification.")
+
+        encoder_ckpt = out_dir_ts / "dna_encoder_jepa.pth"
+
+        clf_on_raw = True
+        if args.pretrained_enc:
+            encoder_ckpt = Path(args.pretrained_enc)
+            clf_on_raw = False
+            logger.info(f"Will use pretrained encoder from {encoder_ckpt}")
+
+        train_classifier(
+            classification_df=df,
+            encoder_ckpt=encoder_ckpt,
+            hidden_dim=args.hidden_dim,
+            dim_feedforward=args.dim_feedforward,
+            nhead=args.nhead,
+            num_layers=args.num_layers,
+            clf_lr=args.clf_lr,
+            clf_epochs=args.clf_epochs,
+            clf_batch_size=args.clf_batch_size,
+            val_steps=args.val_steps,
+            out_dir=out_dir_ts,
+            seed=args.seed,
+            wb_logger=wb_logger,
+            use_raw=clf_on_raw,
+        )
 
 
 if __name__ == "__main__":
