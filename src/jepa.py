@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -106,56 +107,21 @@ def mask_torch_sequence(
     return input_ids_t, labels_t
 
 
-class TorchDNAMaskedDataset(Dataset):
-    def __init__(
-        self,
-        sequences_t: torch.LongTensor,
-        mask_prob: float = 0.15,
-        mask_token_id: int = MASK_TOKEN_ID,
-        ignore_index: int = IGNORE_INDEX,
-    ) -> None:
+class DNADataset(Dataset):
+    def __init__(self, sequences_t: torch.LongTensor) -> None:
         """
-        sequences_t: LongTensor of shape (N_windows, window_size), values in {0,1,2,3}.
-        mask_prob: fraction of positions to mask per window.
+        sequences_t: LongTensor of shape (N_windows, window_size), values {0,1,2,3}.
         """
-        assert sequences_t.dtype == torch.long, "sequences_t must be LongTensor"
-        assert sequences_t.dim() == 2  # and sequences_t.size(1) == window_size
+        assert sequences_t.dtype == torch.long
+        assert sequences_t.dim() == 2
 
         self.sequences = sequences_t
-        self.mask_prob = mask_prob
-        self.mask_token_id = mask_token_id
-        self.ignore_index = ignore_index
 
     def __len__(self) -> int:
         return self.sequences.size(0)
 
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        seq_t = self.sequences[idx]  # shape (window_size,), dtype=torch.long
-
-        # Apply masking:
-        input_ids_t, labels_t = mask_torch_sequence(
-            seq_t,
-            mask_prob=self.mask_prob,
-            mask_token_id=self.mask_token_id,
-            ignore_index=self.ignore_index,
-        )
-
-        return {
-            "input_ids": input_ids_t,  # LongTensor (window_size,)
-            "labels": labels_t,  # LongTensor (window_size,)
-        }
-
-
-class MLMHead(nn.Module):
-    def __init__(self, hidden_dim: int, vocab_size: int = VOCAB_SIZE) -> None:
-        super().__init__()
-        # Suppose `encoder_out` has shape (B, window_size, hidden_dim).
-        self.linear = nn.Linear(hidden_dim, vocab_size)
-
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        # hidden_states: (B, window_size, hidden_dim)
-        # logits: (B, window_size, vocab_size)
-        return self.linear(hidden_states)
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        return self.sequences[idx]  # shape: (window_size,)
 
 
 class DNAEncoder(nn.Module):
@@ -176,6 +142,12 @@ class DNAEncoder(nn.Module):
             encoder_layer=enc_layer, num_layers=num_layers
         )
 
+        self.hidden_dim = hidden_dim
+        self.dim_feedforward = dim_feedforward
+        self.nhead = nhead
+        self.num_layers = num_layers
+        self.vocab_size = vocab_size
+
     def forward(self, input_ids: torch.LongTensor) -> torch.Tensor:
         """
         input_ids: (B, window_size), values in {0,1,2,3,4}.
@@ -188,12 +160,59 @@ class DNAEncoder(nn.Module):
         return x
 
 
+class Predictor(nn.Module):
+    def __init__(self, hidden_dim: int) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # hidden_states: (B, window_size, hidden_dim)
+        B, L, D = hidden_states.shape
+        # Flatten to (B*L, D), run through MLP, then reshape back
+        flat = hidden_states.reshape(B * L, D)
+        out = self.net(flat)  # (B*L, D)
+        return out.view(B, L, D)  # (B, window_size, hidden_dim)
+
+
+def clone_encoder_for_ema(encoder: DNAEncoder) -> DNAEncoder:
+    """
+    Make an exact, detached copy of the online encoder to serve as the EMA (target) encoder.
+    """
+    target = DNAEncoder(
+        hidden_dim=encoder.hidden_dim,
+        dim_feedforward=encoder.dim_feedforward,
+        nhead=encoder.nhead,
+        num_layers=encoder.num_layers,
+        vocab_size=encoder.vocab_size,
+    )
+    # Copy weights over
+    for p_src, p_tgt in zip(encoder.parameters(), target.parameters()):
+        p_tgt.data.copy_(p_src.data)
+        p_tgt.requires_grad = False  # Freeze EMA encoder
+    return target
+
+
+def update_ema(online: DNAEncoder, target: DNAEncoder, tau: float) -> None:
+    """
+    In-place EMA update of target's parameters:
+      θ_target ← τ·θ_target + (1-τ)·θ_online
+    Typically τ is very close to 1 (e.g. 0.999 or 0.99).
+    """
+    with torch.no_grad():
+        for p_online, p_target in zip(online.parameters(), target.parameters()):
+            p_target.data.mul_(tau).add_(p_online.data * (1.0 - tau))
+
+
 def count_trainable(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 def train_jepa(
-    classification_ds: str,
+    classification_df: pd.DataFrame,
     mask_prob: float,
     batch_size: int,
     num_workers: int,
@@ -202,19 +221,19 @@ def train_jepa(
     nhead: int,
     num_layers: int,
     lr: float,
+    ema_tau: float,
+    num_epochs: int,
+    out_dir: Path,
 ) -> None:
     device = (
         torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     )
 
-    df = pd.read_csv(classification_ds)
+    df = classification_df
     torch_seqs, torch_labels = get_torch_seqs(df)
 
-    dataset = TorchDNAMaskedDataset(
+    dataset = DNADataset(
         sequences_t=torch_seqs,
-        mask_prob=mask_prob,
-        mask_token_id=MASK_TOKEN_ID,
-        ignore_index=IGNORE_INDEX,
     )
     loader = DataLoader(
         dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
@@ -227,15 +246,70 @@ def train_jepa(
         nhead=nhead,
         num_layers=num_layers,
     ).to(device)
-    mlm_head = MLMHead(hidden_dim=hidden_dim, vocab_size=VOCAB_SIZE).to(device)
+
+    target_encoder = clone_encoder_for_ema(encoder).to(device)
+    predictor = Predictor(hidden_dim=hidden_dim).to(device)
 
     enc_params = count_trainable(encoder)
-    head_params = count_trainable(mlm_head)
-    total_params = enc_params + head_params
+    predictor_params = count_trainable(predictor)
+    total_params = enc_params + predictor_params
     logger.info(f"Encoder trainable parameters: {enc_params:,}")
-    logger.info(f"MLM head trainable parameters: {head_params:,}")
+    logger.info(f"MLM head trainable parameters: {predictor_params:,}")
     logger.info(f"Total trainable parameters: {total_params:,}")
 
     optimizer = optim.Adam(
-        list(encoder.parameters()) + list(mlm_head.parameters()), lr=lr
+        list(encoder.parameters()) + list(predictor.parameters()), lr=lr
     )
+    criterion = nn.MSELoss()
+
+    for epoch in range(num_epochs):
+        encoder.train()
+        predictor.train()
+        total_loss = 0.0
+
+        for full_seqs in loader:
+            # full_seqs: LongTensor (B, window_size), values ∈ {0..3}
+            full_seqs = full_seqs.to(device)
+
+            # 1) Mask locally:
+            input_ids_masked, _ = mask_torch_sequence(
+                full_seqs,
+                mask_prob=mask_prob,
+                mask_token_id=MASK_TOKEN_ID,
+                ignore_index=IGNORE_INDEX,
+            )
+            # input_ids_masked: (B, window_size), ∈ {0..4}
+
+            # 2) Online encoder on masked input → emb_masked
+            emb_masked = encoder(input_ids_masked)
+            # emb_masked: (B, window_size, hidden_dim)
+
+            # 3) Target encoder on the **unmasked** full sequences (no grad)
+            with torch.no_grad():
+                emb_target = target_encoder(full_seqs)
+                # emb_target: (B, window_size, hidden_dim)
+
+            # 4) Predictor tries to map emb_masked → emb_pred
+            emb_pred = predictor(emb_masked)
+            # emb_pred: (B, window_size, hidden_dim)
+
+            # 5) Compute MSE loss (over entire sequence length)
+            loss = criterion(emb_pred, emb_target)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            # 6) EMA update of target encoder
+            update_ema(online=encoder, target=target_encoder, tau=ema_tau)
+
+            total_loss += loss.item()
+
+        avg_loss = total_loss / len(loader)
+        logger.info(
+            f"Epoch {epoch + 1}/{num_epochs}  —  JEPA MSE Loss = {avg_loss:.6f}"
+        )
+
+    torch.save(encoder.state_dict(), out_dir / "dna_encoder_jepa.pth")
+    torch.save(predictor.state_dict(), out_dir / "predictor_jepa.pth")
+    logger.info(f"Saved models into {out_dir}")
