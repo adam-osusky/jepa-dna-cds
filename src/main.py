@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+import wandb
 
 from src.jepa import train_jepa
 from src.window import create_classification_dataset
@@ -120,6 +121,12 @@ def parse_args() -> argparse.Namespace:
         default=4,
         help="Number of transformer layers in encoder.",
     )
+    parser.add_argument(
+        "--wandb_logging",
+        action="store_true",
+        default=True,
+        help="Enable Weights & Biases logging of metrics.",
+    )
 
     return parser.parse_args()
 
@@ -127,7 +134,7 @@ def parse_args() -> argparse.Namespace:
 def get_classification_df(args: argparse.Namespace) -> pd.DataFrame:
     # If the output file already exists, just load it
     if os.path.exists(args.classification_ds):
-        logger.warn(
+        logger.warning(
             "Found existing dataset at '%s'; loading it.", args.classification_ds
         )
         df: pd.DataFrame = pd.read_csv(args.classification_ds)
@@ -166,8 +173,19 @@ def main() -> None:
     args: argparse.Namespace = parse_args()
     set_rand_seed(args.seed)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir_ts = Path("data/experiments") / timestamp
+    wb_logger = None
+    if args.wandb_logging:
+        wandb.login()
+        wb_logger = wandb.init(
+            project="jepa-dna-pretrain",
+            config=vars(args),
+            dir="./logs",
+        )
+
+    experiment_name = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if wb_logger:
+        experiment_name = str(wb_logger.name)
+    out_dir_ts = Path("data/experiments") / experiment_name
     out_dir_ts.mkdir(parents=True, exist_ok=True)
     logger.info(f"Created directory for outputs: {out_dir_ts}")
 
@@ -196,6 +214,7 @@ def main() -> None:
         ema_tau=args.ema_tau,
         num_epochs=args.num_epochs,
         out_dir=out_dir_ts,
+        wb_logger=wb_logger,
     )
 
 

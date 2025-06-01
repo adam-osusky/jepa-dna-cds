@@ -6,6 +6,8 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import wandb
+import wandb.sdk
 from numpy.typing import NDArray
 from pandas import DataFrame
 from torch.utils.data import DataLoader, Dataset
@@ -224,12 +226,13 @@ def train_jepa(
     ema_tau: float,
     num_epochs: int,
     out_dir: Path,
+    wb_logger: None | wandb.sdk.wandb_run.Run,
 ) -> None:
     device = (
         torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     )
 
-    df = classification_df
+    df = classification_df.head(64)
     torch_seqs, torch_labels = get_torch_seqs(df)
 
     dataset = DNADataset(
@@ -262,6 +265,7 @@ def train_jepa(
     )
     criterion = nn.MSELoss()
 
+    sqd_step = 0
     for epoch in range(num_epochs):
         encoder.train()
         predictor.train()
@@ -303,7 +307,12 @@ def train_jepa(
             # 6) EMA update of target encoder
             update_ema(online=encoder, target=target_encoder, tau=ema_tau)
 
-            total_loss += loss.item()
+            batch_loss = loss.item()
+            total_loss += batch_loss
+            sqd_step += 1
+
+            if wb_logger:
+                wb_logger.log({"batch_mse_loss": batch_loss}, step=sqd_step)
 
         avg_loss = total_loss / len(loader)
         logger.info(
