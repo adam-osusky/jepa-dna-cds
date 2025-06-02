@@ -232,7 +232,7 @@ def train_jepa(
         torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     )
 
-    df = classification_df.head(64)
+    df = classification_df
     torch_seqs, torch_labels = get_torch_seqs(df)
 
     dataset = DNADataset(
@@ -313,6 +313,9 @@ def train_jepa(
 
             if wb_logger:
                 wb_logger.log({"batch_mse_loss": batch_loss}, step=sqd_step)
+            
+            if sqd_step % 100 == 0:
+                logger.info(f"Step [{sqd_step}] - —  JEPA MSE Loss = {batch_loss:.6f}")
 
         avg_loss = total_loss / len(loader)
         logger.info(
