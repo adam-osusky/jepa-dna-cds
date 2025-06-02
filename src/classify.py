@@ -101,6 +101,7 @@ def train_classifier(
     dim_feedforward: int,
     nhead: int,
     num_layers: int,
+    head_hidden_dim: int,
     clf_lr: float,
     clf_epochs: int,
     clf_batch_size: int,
@@ -154,7 +155,7 @@ def train_classifier(
 
     if use_raw:
         classifier_model = RawSequenceClassifier(
-            vocab_size=VOCAB_SIZE, hidden_dim=hidden_dim, num_classes=2
+            vocab_size=VOCAB_SIZE, hidden_dim=head_hidden_dim, num_classes=2
         ).to(device)
         model_name = "raw_classifier.pth"
         logger.info("Will be using raw classifier.")
@@ -173,7 +174,7 @@ def train_classifier(
 
         # 2) Use the same two-layer MLP head
         classifier_model = SequenceClassificationHead(
-            hidden_dim=hidden_dim, input_dim=hidden_dim, num_classes=2
+            hidden_dim=head_hidden_dim, input_dim=hidden_dim, num_classes=2
         ).to(device)
         model_name = "classifier.pth"
 
