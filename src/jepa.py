@@ -263,7 +263,7 @@ def train_jepa(
     optimizer = optim.Adam(
         list(encoder.parameters()) + list(predictor.parameters()), lr=lr
     )
-    criterion = nn.MSELoss()
+    criterion = nn.L1Loss()
 
     sqd_step = 0
     for epoch in range(num_epochs):
@@ -312,15 +312,13 @@ def train_jepa(
             sqd_step += 1
 
             if wb_logger:
-                wb_logger.log({"batch_mse_loss": batch_loss}, step=sqd_step)
-            
+                wb_logger.log({"batch_l1_loss": batch_loss}, step=sqd_step)
+
             if sqd_step % 100 == 0:
-                logger.info(f"Step [{sqd_step}] - —  JEPA MSE Loss = {batch_loss:.6f}")
+                logger.info(f"Step [{sqd_step}] - —  JEPA L1 Loss = {batch_loss:.6f}")
 
         avg_loss = total_loss / len(loader)
-        logger.info(
-            f"Epoch {epoch + 1}/{num_epochs}  —  JEPA MSE Loss = {avg_loss:.6f}"
-        )
+        logger.info(f"Epoch {epoch + 1}/{num_epochs}  —  JEPA L1 Loss = {avg_loss:.6f}")
 
     torch.save(encoder.state_dict(), out_dir / "dna_encoder_jepa.pth")
     torch.save(predictor.state_dict(), out_dir / "predictor_jepa.pth")
