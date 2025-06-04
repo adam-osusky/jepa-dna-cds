@@ -44,7 +44,13 @@ class DNALabelsDataset(Dataset):
 
 
 class SequenceClassificationHead(nn.Module):
-    def __init__(self, hidden_dim: int, input_dim: int, num_classes: int = 2) -> None:
+    def __init__(
+        self,
+        hidden_dim: int,
+        input_dim: int,
+        num_classes: int = 2,
+        dropout_p: float = 0.5,
+    ) -> None:
         """
         A two-layer MLP: hidden_dim → hidden_dim → num_classes,
         with a ReLU in between.
@@ -52,6 +58,7 @@ class SequenceClassificationHead(nn.Module):
         """
         super().__init__()
         self.net = nn.Sequential(
+            nn.Dropout(dropout_p),
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, num_classes),
@@ -63,31 +70,27 @@ class SequenceClassificationHead(nn.Module):
 
 
 class RawSequenceClassifier(nn.Module):
-    def __init__(self, vocab_size: int, hidden_dim: int, num_classes: int = 2) -> None:
+    def __init__(
+        self, vocab_size: int, window_size: int, hidden_dim: int, num_classes: int = 2
+    ) -> None:
         """
-        Instead of a learnable Embedding, we one-hot encode each position (0..vocab_size-1).
-        Then we average-pool over the sequence length to get a (B, vocab_size) tensor.
-        Finally, we feed that (B, vocab_size) into a two-layer MLP head.
+        Instead of mean pooling, we flatten the one-hot encoded (B, L, V) into (B, L*V),
+        then use an MLP for classification.
         """
         super().__init__()
         self.vocab_size = vocab_size
-        # The head now expects `hidden_dim = vocab_size`
+        self.window_size = window_size
+        input_dim = vocab_size * window_size
         self.head = SequenceClassificationHead(
-            hidden_dim=hidden_dim, input_dim=vocab_size, num_classes=num_classes
+            hidden_dim=hidden_dim, input_dim=input_dim, num_classes=num_classes
         )
 
     def forward(self, seqs: torch.LongTensor) -> torch.Tensor:
-        """
-        seqs: (B, window_size), values ∈ {0,1,2,3}
-        1) one_hot: (B, window_size, vocab_size)
-        2) pooled:  (B, vocab_size)
-        3) logits:  (B, num_classes)
-        """
-        # (B, L, V), float
+        # (B, L, V)
         one_hot = F.one_hot(seqs, num_classes=self.vocab_size).float()
-        # average‐pool over L → (B, V)
-        pooled = one_hot.mean(dim=1)
-        return self.head(pooled)
+        # flatten to (B, L*V)
+        flattened = one_hot.reshape(seqs.size(0), -1)
+        return self.head(flattened)
 
 
 def count_trainable(model: nn.Module) -> int:
@@ -108,6 +111,7 @@ def train_classifier(
     val_steps: int,
     out_dir: Path,
     seed: int,
+    l2_reg: float,
     wb_logger: None | wandb.sdk.wandb_run.Run,
     use_raw: bool = False,
 ) -> None:
@@ -154,8 +158,12 @@ def train_classifier(
     )
 
     if use_raw:
+        window_size = all_seqs_t.size(1)
         classifier_model = RawSequenceClassifier(
-            vocab_size=VOCAB_SIZE, hidden_dim=head_hidden_dim, num_classes=2
+            vocab_size=VOCAB_SIZE,
+            window_size=window_size,
+            hidden_dim=head_hidden_dim,
+            num_classes=2,
         ).to(device)
         model_name = "raw_classifier.pth"
         logger.info("Will be using raw classifier.")
@@ -173,17 +181,23 @@ def train_classifier(
             param.requires_grad = False
 
         # 2) Use the same two-layer MLP head
+        window_size = all_seqs_t.size(1)
         classifier_model = SequenceClassificationHead(
-            hidden_dim=head_hidden_dim, input_dim=hidden_dim, num_classes=2
+            hidden_dim=head_hidden_dim,
+            input_dim=hidden_dim * window_size,
+            num_classes=2,
         ).to(device)
         model_name = "classifier.pth"
 
         logger.info("Will be using pretrained encoder.")
 
     logger.info(f"Number of trainable params = {count_trainable(classifier_model)}")
+    logger.info(classifier_model)
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(classifier_model.parameters(), lr=clf_lr)
+    optimizer = optim.AdamW(
+        classifier_model.parameters(), lr=clf_lr, weight_decay=l2_reg
+    )
 
     global_step = 0
     for epoch in range(clf_epochs):
@@ -205,8 +219,10 @@ def train_classifier(
                 # Frozen-encoder: get JEPA embeddings first
                 with torch.no_grad():
                     emb = encoder(seqs)  # (B, window_size, hidden_dim)
-                    pooled = emb.mean(dim=1)  # → (B, hidden_dim)
-                logits = classifier_model(pooled)  # (B, 2)
+                    flattened = emb.reshape(
+                        emb.size(0), -1
+                    )  # (B, window_size * hidden_dim)
+                logits = classifier_model(flattened)  # (B, 2)
                 loss = criterion(logits, labels)
 
             optimizer.zero_grad()
@@ -236,8 +252,10 @@ def train_classifier(
                             v_loss_batch = criterion(v_logits, v_labels)
                         else:
                             v_emb = encoder(v_seqs)
-                            v_pooled = v_emb.mean(dim=1)
-                            v_logits = classifier_model(v_pooled)
+                            flattened = emb.reshape(
+                                v_emb.size(0), -1
+                            )  # (B, window_size * hidden_dim)
+                            v_logits = classifier_model(flattened)
                             v_loss_batch = criterion(v_logits, v_labels)
 
                         val_loss += v_loss_batch.item() * v_seqs.size(0)
@@ -282,8 +300,10 @@ def train_classifier(
                     loss_batch = criterion(logits, labels)
                 else:
                     emb = encoder(seqs)
-                    pooled = emb.mean(dim=1)
-                    logits = classifier_model(pooled)
+                    flattened = emb.reshape(
+                        emb.size(0), -1
+                    )  # (B, window_size * hidden_dim)
+                    logits = classifier_model(flattened)
                     loss_batch = criterion(logits, labels)
 
                 val_loss += loss_batch.item() * seqs.size(0)
