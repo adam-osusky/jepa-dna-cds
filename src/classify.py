@@ -266,9 +266,6 @@ def train_classifier(
 
         avg_loss = epoch_loss / len(train_subset)
         train_acc = correct / total
-        logger.info(
-            f"Epoch {epoch + 1}/{clf_epochs} [Train] Loss={avg_loss:.4f}, Acc={train_acc:.4f}"
-        )
 
         # End-of-epoch Validation
         classifier_model.eval()
@@ -297,7 +294,7 @@ def train_classifier(
         avg_val_loss = val_loss / len(val_subset)
         val_acc = val_correct / val_total
         logger.info(
-            f"Epoch {epoch + 1}/{clf_epochs} [Val]   Loss={avg_val_loss:.4f}, Acc={val_acc:.4f}"
+            f"Epoch {epoch + 1}/{clf_epochs} [Train] Loss={avg_loss:.4f}, Acc={train_acc:.4f} [Val] Loss={avg_val_loss:.4f}, Acc={val_acc:.4f}"
         )
 
         if wb_logger:
