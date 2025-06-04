@@ -134,9 +134,14 @@ class DNAEncoder(nn.Module):
         nhead: int = 8,
         num_layers: int = 4,
         vocab_size: int = VOCAB_SIZE,
+        max_seq_len: int = 512,
     ) -> None:
         super().__init__()
         self.tok_emb = nn.Embedding(num_embeddings=vocab_size, embedding_dim=hidden_dim)
+        self.pos_emb = nn.Embedding(
+            num_embeddings=max_seq_len, embedding_dim=hidden_dim
+        )
+
         enc_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim, nhead=nhead, dim_feedforward=dim_feedforward
         )
@@ -149,16 +154,24 @@ class DNAEncoder(nn.Module):
         self.nhead = nhead
         self.num_layers = num_layers
         self.vocab_size = vocab_size
+        self.max_seq_len = max_seq_len
 
     def forward(self, input_ids: torch.LongTensor) -> torch.Tensor:
         """
         input_ids: (B, window_size), values in {0,1,2,3,4}.
         Returns:  (B, window_size, hidden_dim)
         """
-        x = self.tok_emb(input_ids)  # (B, window_size, hidden_dim)
-        x = x.permute(1, 0, 2)  # (window_size, B, hidden_dim)
-        x = self.encoder(x)  # (window_size, B, hidden_dim)
-        x = x.permute(1, 0, 2)  # (B, window_size, hidden_dim)
+        B, L = input_ids.shape
+        device = input_ids.device
+        pos_ids = torch.arange(L, device=device).unsqueeze(0).expand(B, L)  # (B, L)
+
+        tok_emb = self.tok_emb(input_ids)  # (B, L, hidden_dim)
+        pos_emb = self.pos_emb(pos_ids)  # (B, L, hidden_dim)
+        x = tok_emb + pos_emb  # (B, L, hidden_dim)
+
+        x = x.permute(1, 0, 2)  # (L, B, hidden_dim)
+        x = self.encoder(x)  # (L, B, hidden_dim)
+        x = x.permute(1, 0, 2)  # (B, L, hidden_dim)
         return x
 
 
@@ -166,8 +179,6 @@ class Predictor(nn.Module):
     def __init__(self, hidden_dim: int) -> None:
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
         )
 
