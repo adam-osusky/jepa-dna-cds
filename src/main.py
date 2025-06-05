@@ -68,22 +68,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=2,
+        default=32,
         help="Batch size for training.",
     )
     parser.add_argument(
         "--num_epochs",
         type=int,
-        default=100,
+        default=10,
         help="Number of train passes through the data.",
     )
     parser.add_argument(
-        "--lr", type=float, default=0.1, help="Learning rate for training."
+        "--lr", type=float, default=0.05, help="Learning rate for training."
     )
     parser.add_argument(
         "--ema_tau",
         type=float,
-        default=0.95,
+        default=0.99,
         help="In-place EMA update of target's parameters",
     )
     parser.add_argument(
@@ -101,19 +101,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--hidden_dim",
         type=int,
-        default=16,
+        default=5,
         help="Hidden dimension in transformer layers in encoder.",
     )
     parser.add_argument(
         "--dim_feedforward",
         type=int,
-        default=16*4,
+        default=5 * 4,
         help="Feedforward dimension size in transformer layers in encoder.",
     )
     parser.add_argument(
         "--nhead",
         type=int,
-        default=2,
+        default=1,
         help="Number of attention heads in transformer layers in encoder.",
     )
     parser.add_argument(
@@ -129,20 +129,25 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Enable Weights & Biases logging of metrics.",
     )
-
+    # classification hyperparams
     parser.add_argument(
         "--run_classification",
         action="store_true",
-        # default=False,
-        default=True,
+        # default=True,
         help="After JEPA pretrain, train a classifier (frozen-encoder or raw-sequence).",
     )
     parser.add_argument(
         "--pretrained_enc",
-        # default=None,
-        default="data/experiments/stellar-morning-11/dna_encoder_jepa.pth",
+        default=None,
+        # default="data/experiments/golden-vortex-56/dna_encoder_jepa.pth",
         help="Path to the pretrained encoder (default: %(default)s)."
         "If not specified will use classification head on new learnable embeddings",
+    )
+    parser.add_argument(
+        "--head_hidden_dim",
+        type=int,
+        default=64 * 2,
+        help="Batch size for classification training.",
     )
     parser.add_argument(
         "--clf_lr",
@@ -153,21 +158,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--clf_epochs",
         type=int,
-        default=1000,
+        default=20,
         help="Number of epochs to train the classification head.",
     )
     parser.add_argument(
         "--clf_batch_size",
         type=int,
-        default=1,
+        # default=256,
+        default=256,
         help="Batch size for classification training.",
     )
     parser.add_argument(
         "--val_steps",
         type=int,
         # default=4,
-        default=10,
+        default=10000000,
         help="Run validation every N training steps (default: %(default)s).",
+    )
+
+    parser.add_argument(
+        "--version", default="l1-positional-fulseq-dropout", help="Dummy arg"
+    )
+    parser.add_argument(
+        "--l2_reg",
+        type=float,
+        default=0,
+        help="weight decay",
     )
 
     return parser.parse_args()
@@ -279,6 +295,7 @@ def main() -> None:
             dim_feedforward=args.dim_feedforward,
             nhead=args.nhead,
             num_layers=args.num_layers,
+            head_hidden_dim=args.head_hidden_dim,
             clf_lr=args.clf_lr,
             clf_epochs=args.clf_epochs,
             clf_batch_size=args.clf_batch_size,
@@ -287,6 +304,7 @@ def main() -> None:
             seed=args.seed,
             wb_logger=wb_logger,
             use_raw=clf_on_raw,
+            l2_reg=args.l2_reg,
         )
 
 
